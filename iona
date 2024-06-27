@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import yaml
+import subprocess
+
+def generate_rootfs(codename, repos):
+    source_entries = []
+    for repo in repos:
+        for suite in repo['suites']:
+            source_entry = f'deb {repo["url"]} {suite} {" ".join(repo["components"])}'
+            source_entries.append(source_entry)
+            if type(repo['deb-src']) is bool:
+                if repo['deb-src']:
+                    source_entry = f'deb-src {repo["url"]} {suite} {repo["components"].join(" ")}'
+                    source_entries.append(source_entry)
+
+    if subprocess.run(['mkdir', '-p', '.build/rootfs']).returncode != 0:
+        print('Unable to create .build directory. Check the permissions for the current working directory.')
+        exit(4)
+    subprocess.run(['mmdebstrap', codename, '.build/rootfs', '\n'.join(source_entries)], stdout=sys.stdout, stderr=sys.stderr)
+
+def install_packages(package_set):
+    apt_env = os.environ.copy()
+    apt_env['DEBIAN_FRONTEND'] = 'noninteractive'
+
+    if package_set['type'] == 'deb':
+        for pkg in package_set['list']:
+            if pkg.startswith('!'):
+                _pkg = pkg[1:]
+                package_set['list'].remove(pkg)
+                subprocess.run(['mkdir', '-p', '.build/rootfs/etc/apt/preferences.d'])
+                with open(f'.build/rootfs/etc/apt/preferences.d/no_{_pkg}.pref', 'w') as seed_file:
+                    seed_file.write(f'''Package: {_pkg}
+Pin: release a=*
+Pin-Priority: -10
+''')
+
+        subprocess.run(['systemd-nspawn', '--bind', '/etc/resolv.conf', '-D', '.build/rootfs', '--', 'apt-get', 'update'], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+        subprocess.run(['mv', '.build/rootfs/etc/resolv.conf', '.build/rootfs/etc/resolv.conf.old'], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+        subprocess.run(['touch', '.build/rootfs/etc/resolv.conf'], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+        subprocess.run(['mount', '--bind', '/etc/resolv.conf', '.build/rootfs/etc/resolv.conf'], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+        subprocess.run(['arch-chroot', '.build/rootfs', 'apt-get', 'install', '-yq', *package_set['list']], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+        subprocess.run(['umount', '.build/rootfs/etc/resolv.conf'], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+        subprocess.run(['mv', '.build/rootfs/etc/resolv.conf.old', '.build/rootfs/etc/resolv.conf'], stdout=sys.stdout, stderr=sys.stderr, env=apt_env)
+    elif package_set['type'] == 'flatpak':
+        install_packages({
+            'type': 'deb',
+            'list': [
+                'flatpak'
+            ]
+        })
+
+        subprocess.run(['systemd-nspawn', '--bind', '/etc/resolv.conf', '-D', '.build/rootfs', '--', 'flatpak', 'remote-add', '--if-not-exists', 'flathub', 'https://dl.flathub.org/repo/flathub.flatpakrepo'], stdout=sys.stdout, stderr=sys.stderr)
+        subprocess.run(['systemd-nspawn', '--bind', '/etc/resolv.conf', '-D', '.build/rootfs', '--', 'flatpak', 'install', '-y', '--noninteractive', *package_set['list']], stdout=sys.stdout, stderr=sys.stderr)
+    elif package_set['type'] == 'snap':
+        install_packages({
+            'type': 'deb',
+            'list': [
+                'snapd'
+            ]
+        })
+
+        subprocess.run(['mkdir', '-p', '.build/snap-seed'], stdout=sys.stdout, stderr=sys.stderr)
+        subprocess.run(['mkdir', '-p', '.build/snap-seed/snaps'], stdout=sys.stdout, stderr=sys.stderr)
+        subprocess.run(['mkdir', '-p', '.build/snap-seed/assertions'], stdout=sys.stdout, stderr=sys.stderr)
+
+        snap_list = {}
+
+        for snap in package_set['list']:
+            if ':' in snap:
+                snap_list[snap.split(':')[0]] = {
+                    'channel': snap.split(':')[1]
+                }
+                subprocess.run(['snap', 'download', snap.split(':')[0], '--channel', snap.split(':')[1]], stdout=sys.stdout, stderr=sys.stderr, cwd='.build/snap-seed/snaps')
+            else:
+                snap_list[snap.split(':')[0]] = {
+                    'channel': 'stable'
+                }
+                subprocess.run(['snap', 'download', snap, '--channel', 'stable'], stdout=sys.stdout, stderr=sys.stderr, cwd='.build/snap-seed/snaps')
+
+            for file in os.listdir('.build/snap-seed/snaps'):
+                if file.endswith('.assert'):
+                    subprocess.run(['mv', file, '../assertions'], stdout=sys.stdout, stderr=sys.stderr, cwd='.build/snap-seed/snaps')
+
+        with open('.build/snap-seed/assertions/generic-classic.model', 'w') as generic_classic_module:
+            contents = subprocess.run(['snap', 'known', '--remote', 'model', 'series=16', 'model=generic-classic', 'brand-id=generic'], capture_output=True, text=True, cwd='.build/snap-seed/assertions').stdout
+
+            print(contents)
+
+            account_key = ''
+
+            for line in contents.split('\n'):
+                if line.startswith('sign-key-sha3-384: '):
+                    account_key = line.strip().replace('sign-key-sha3-384: ', '', 1)
+
+            if account_key == '':
+                print('Unable to retrieve account key for snaps.')
+                exit(6)
+
+            generic_classic_module.write(contents)
+
+        with open('.build/snap-seed/assertions/generic.account-key', 'w') as generic_account_key:
+            subprocess.run(['snap', 'known', '--remote', 'account-key', f'public-key-sha3-384={account_key}'], stdout=generic_account_key, stderr=sys.stderr, cwd='.build/snap-seed/assertions')
+
+        with open('.build/snap-seed/assertions/generic.account', 'w') as generic_account:
+            subprocess.run(['snap', 'known', '--remote', 'account', f'account-id=generic'], stdout=generic_account, stderr=sys.stderr, cwd='.build/snap-seed/assertions')
+
+        with open('.build/snap-seed/seed.yaml', 'w') as seed_file:
+            snap_seed = { 'snaps': [] }
+
+            for snap in os.listdir('.build/snap-seed/snaps'):
+                snap_name = snap.split('_')[0]
+                snap_channel = snap_list[snap_name]['channel']
+                snap_file = snap
+                snap_seed['snaps'].append({
+                    'name': snap_name,
+                    'channel': snap_channel,
+                    'file': snap_file
+                })
+
+            yaml.dump(snap_seed, seed_file)
+
+        subprocess.run(['mkdir', '-p', '.build/rootfs/var/lib/snapd'])
+        subprocess.run(['rm', '-rf', '.build/rootfs/var/lib/snapd/seed'])
+        subprocess.run(['mv', '.build/snap-seed', '.build/rootfs/var/lib/snapd/seed'])
+
+def workaround(workaround):
+    if workaround['name'] == 'ubuntu-network':
+        subprocess.run(['mkdir', '-p', '.build/rootfs/etc/NetworkManager/conf.d'])
+        with open('.build/rootfs/etc/NetworkManager/conf.d/network-workaround.conf', 'w') as network_file:
+            network_file_contents = '''[keyfile]
+unmanaged-devices=none'''
+            network_file.write(network_file_contents)
+    elif workaround['name'] == 'command':
+        if type(workaround['command']) == str:
+            subprocess.run(['systemd-nspawn', '--bind', '/etc/resolv.conf', '-D', '.build/rootfs', '--', 'bash', '-c', workaround['command']], stdout=sys.stdout, stderr=sys.stderr)
+        elif type(workaround['command']) == list:
+            subprocess.run(['systemd-nspawn', '--bind', '/etc/resolv.conf', '-D', '.build/rootfs', '--', *workaround['command']], stdout=sys.stdout, stderr=sys.stderr)
+    elif workaround['name'] == 'ubiquity-remove':
+        subprocess.run(['mkdir', '-p', '.build/iso/casper'])
+        with open('.build/iso/casper/filesystem.manifest-remove', 'w') as filesystem_manifest_remove_file:
+                filesystem_manifest_remove_file.write('''ubiquity
+ubiquity-casper
+ubiquity-frontend-gtk
+ubiquity-slideshow-ubuntu
+''')
+
+def build_artifacts(name, artifact):
+    if artifact['type'] == 'iso':
+        install_packages({
+            'type': 'deb',
+            'list': [
+                'linux-generic',
+                'grub2-common',
+                'casper'
+            ]
+        })
+
+        subprocess.run(['mkdir', '-p', '.build/iso/casper'])
+        subprocess.run(['mksquashfs', '.build/rootfs', '.build/iso/casper/filesystem.squashfs'])
+
+        subprocess.run(['cp', '-L', '.build/rootfs/boot/vmlinuz', '.build/iso/casper/vmlinuz'])
+        subprocess.run(['cp', '-L', '.build/rootfs/boot/initrd.img', '.build/iso/casper/initrd.img'])
+
+        subprocess.run(['touch', '.build/iso/iona_disk'])
+        subprocess.run(['mkdir', '-p', '.build/iso/boot/grub'])
+
+        with open('.build/iso/boot/grub/grub.cfg', 'w') as grub_cfg:
+            grub_cfg_contents = '''search --set=root --file /iona_disk
+
+insmod all_video
+
+set default="0"
+set timeout=30
+
+menuentry "Try or install ''' + name + '''" {
+   linux /casper/vmlinuz boot=casper quiet splash ---
+   initrd /casper/initrd.img
+}'''
+            grub_cfg.write(grub_cfg_contents)
+
+        if subprocess.run(['xorriso', '-as', 'mkisofs', '-r', '-J', '-iso-level', '3', '-joliet-long', '-l', '-b', 'boot/grub/i386-pc/eltorito.img',
+                        '-no-emul-boot', '-boot-load-size', '4', '-boot-info-table', '--grub2-boot-info', '--grub2-mbr',
+                        '/usr/share/cd-boot-images-amd64/images/boot/grub/i386-pc/boot_hybrid.img', '-append_partition', '2',
+                        '0xef', '/usr/share/cd-boot-images-amd64/images/boot/grub/efi.img', '-appended_part_as_gpt',
+                        '-eltorito-alt-boot', '-e', '--interval:appended_partition_2:all::', '-no-emul-boot', '-partition_offset',
+                        '16', '/usr/share/cd-boot-images-amd64/tree', '-V', name, '-o', '../../' + artifact['name'], '.'],
+                        cwd='.build/iso', stdout=sys.stdout, stderr=sys.stderr).returncode != 0:
+
+            print()
+            print('==============================')
+            print('Failed to build the final ISO.')
+            exit(5)
+
+        print()
+        print('==============')
+        print('Built the ISO.')
+        print()
+        print('File name: ' + artifact['name'])
+        print()
+    elif artifact['type'] == 'squashfs':
+        subprocess.run(['mksquashfs', '.build/rootfs', artifact['name']])
+        print()
+        print('=======================')
+        print('Generated the squashfs.')
+        print()
+        print('File name: ' + artifact['name'])
+
+    subprocess.run(['rm', '-rf', '.build'])
+
+def main():
+    if os.geteuid() != 0:
+        print('Iona must be executed as root.')
+        exit(10)
+
+    try:
+        with open(sys.argv[1]) as f:
+            try:
+                build_config = yaml.safe_load(f)
+            except yaml.YAMLError:
+                print('Something is wrong with the YAML file.')
+                exit(2)
+    except IndexError:
+        print('A YAML file must be passed as an argument.')
+        exit(1)
+    except FileNotFoundError:
+        print('A YAML file must be passed as an argument.')
+        exit(1)
+
+    if os.path.isdir('.build'):
+        print('Delete the .build/ folder, and start the build again.')
+        exit(3)
+
+    # Stage 1: Generate a root filesystem
+    generate_rootfs(build_config['codename'], build_config['repos'])
+
+    # Stage 2: Install packages
+    if type(build_config.get('packages')) == list:
+        for package_set in build_config['packages']:
+            install_packages(package_set)
+
+    # Stage 3: Workarounds
+    if type(build_config.get('workarounds')) == list:
+        for _workaround in build_config.get('workarounds'):
+            workaround(_workaround)
+
+    # Stage 4: Build artifacts
+    if type(build_config.get('artifacts')) == list:
+        for artifact in build_config['artifacts']:
+            build_artifacts(build_config['name'], artifact)
+
+if __name__ == '__main__':
+	main()

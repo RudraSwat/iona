@@ -1,0 +1,32 @@
+name: 'Ubuntu Lomiri'
+
+codename: 'mantic'
+
+repos:
+    - url: 'http://archive.ubuntu.com/ubuntu'
+      components:
+        - 'main'
+        - 'universe'
+        - 'multiverse'
+        - 'restricted'
+      suites:
+        - 'mantic'
+        - 'mantic-updates'
+      deb-src: false
+
+    - url: 'http://security.ubuntu.com/ubuntu'
+      components:
+        - 'main'
+        - 'universe'
+        - 'multiverse'
+        - 'restricted'
+      suites:
+        - 'mantic-security'
+      deb-src: false
+
+workarounds:
+    - name: 'ubuntu-network'
+
+artifacts:
+    - type: 'iso'
+      name: 'mini.iso'
