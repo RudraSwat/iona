@@ -207,6 +207,13 @@ menuentry "Try or install ''' + name + '''" {
         print('Generated the squashfs.')
         print()
         print('File name: ' + artifact['name'])
+    elif artifact['type'] == 'tarball':
+        subprocess.run(['tar', '-cpzf', '../../' + artifact['name'], '--one-file-system', '.'], cwd='.build/rootfs')
+        print()
+        print('======================')
+        print('Generated the tarball.')
+        print()
+        print('File name: ' + artifact['name'])
 
     subprocess.run(['rm', '-rf', '.build'])
 
@@ -236,17 +243,22 @@ def main():
     # Stage 1: Generate a root filesystem
     generate_rootfs(build_config['codename'], build_config['repos'])
 
-    # Stage 2: Install packages
+    # Stage 2: Pre-workarounds
+    if type(build_config.get('pre-workarounds')) == list:
+        for _workaround in build_config.get('pre-workarounds'):
+            workaround(_workaround)
+
+    # Stage 3: Install packages
     if type(build_config.get('packages')) == list:
         for package_set in build_config['packages']:
             install_packages(package_set)
 
-    # Stage 3: Workarounds
-    if type(build_config.get('workarounds')) == list:
-        for _workaround in build_config.get('workarounds'):
+    # Stage 4: Post-workarounds
+    if type(build_config.get('post-workarounds')) == list:
+        for _workaround in build_config.get('post-workarounds'):
             workaround(_workaround)
 
-    # Stage 4: Build artifacts
+    # Stage 5: Build artifacts
     if type(build_config.get('artifacts')) == list:
         for artifact in build_config['artifacts']:
             build_artifacts(build_config['name'], artifact)

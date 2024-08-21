@@ -51,7 +51,7 @@ packages:
         - 'gtk-common-themes'
         - 'firefox'
 
-workarounds:
+post-workarounds:
     - name: 'ubuntu-network'
 
     - name: 'command'

@@ -1,6 +1,6 @@
-name: 'Ubuntu Lomiri'
+name: 'Ubuntu Mini'
 
-codename: 'mantic'
+codename: 'noble'
 
 repos:
     - url: 'http://archive.ubuntu.com/ubuntu'
@@ -10,8 +10,8 @@ repos:
         - 'multiverse'
         - 'restricted'
       suites:
-        - 'mantic'
-        - 'mantic-updates'
+        - 'noble'
+        - 'noble-updates'
       deb-src: false
 
     - url: 'http://security.ubuntu.com/ubuntu'
@@ -21,10 +21,10 @@ repos:
         - 'multiverse'
         - 'restricted'
       suites:
-        - 'mantic-security'
+        - 'noble-security'
       deb-src: false
 
-workarounds:
+post-workarounds:
     - name: 'ubuntu-network'
 
 artifacts:
