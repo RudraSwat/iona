@@ -1,0 +1,55 @@
+name: 'Ubuntu Budgie'
+
+codename: 'noble'
+
+repos:
+    - url: 'http://archive.ubuntu.com/ubuntu'
+      components:
+        - 'main'
+        - 'universe'
+        - 'multiverse'
+        - 'restricted'
+      suites:
+        - 'noble'
+        - 'noble-updates'
+      deb-src: false
+
+    - url: 'http://security.ubuntu.com/ubuntu'
+      components:
+        - 'main'
+        - 'universe'
+        - 'multiverse'
+        - 'restricted'
+      suites:
+        - 'noble-security'
+      deb-src: false
+
+pre-workarounds:
+    - name: 'command'
+      command: 'apt-get update; apt-get install -y wget; wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- | sudo tee /etc/apt/keyrings/packages.mozilla.org.asc'
+
+    - name: 'command'
+      command: 'echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" | sudo tee -a /etc/apt/sources.list.d/mozilla.list'
+
+    - name: 'command'
+      command: 'echo -e "Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000" | sudo tee /etc/apt/preferences.d/mozilla'
+
+packages:
+    - type: 'deb'
+      list:
+        - 'nala'
+        - 'firefox'
+        - 'ubuntu-budgie-desktop'
+        - 'network-manager'
+        - 'ubiquity-casper'
+        - 'ubiquity-frontend-gtk'
+        - 'ubiquity-slideshow-ubuntu'
+        - 'software-properties-common'
+
+post-workarounds:
+    - name: 'ubuntu-network'
+    - name: 'ubiquity-remove'
+
+artifacts:
+    - type: 'iso'
+      name: 'ubuntu-budgie.iso'
